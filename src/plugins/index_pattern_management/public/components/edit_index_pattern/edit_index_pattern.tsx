@@ -40,6 +40,11 @@ import {
   EuiLink,
   EuiCallOut,
   EuiPanel,
+  EuiCompressedFieldText,
+  EuiCompressedFormRow,
+  EuiSmallButton,
+  EuiSmallButtonEmpty,
+  EuiSmallButtonIcon,
 } from '@elastic/eui';
 import { i18n } from '@osd/i18n';
 import { FormattedMessage } from '@osd/i18n/react';
@@ -111,6 +116,32 @@ export const EditIndexPattern = withRouter(
     );
     const [defaultIndex, setDefaultIndex] = useState<string>(uiSettings.get('defaultIndex'));
     const [tags, setTags] = useState<any[]>([]);
+    const [isEditingDisplayName, setIsEditingDisplayName] = useState(false);
+    const [displayNameDraft, setDisplayNameDraft] = useState(indexPattern.displayName || '');
+
+    const saveDisplayName = useCallback(async () => {
+      try {
+        indexPattern.displayName = displayNameDraft.trim() || undefined;
+        await data.indexPatterns.updateSavedObject(indexPattern);
+        setIsEditingDisplayName(false);
+      } catch (err) {
+        overlays.openConfirm(err.message, {
+          title: i18n.translate(
+            'indexPatternManagement.editIndexPattern.saveDisplayNameError',
+            { defaultMessage: 'Failed to save display name' }
+          ),
+          confirmButtonText: i18n.translate(
+            'indexPatternManagement.editIndexPattern.saveDisplayNameErrorOk',
+            { defaultMessage: 'OK' }
+          ),
+        });
+      }
+    }, [data.indexPatterns, displayNameDraft, indexPattern, overlays]);
+
+    const cancelDisplayNameEdit = useCallback(() => {
+      setDisplayNameDraft(indexPattern.displayName || '');
+      setIsEditingDisplayName(false);
+    }, [indexPattern.displayName]);
 
     useEffect(() => {
       setFields(indexPattern.getNonScriptedFields());
@@ -204,6 +235,89 @@ export const EditIndexPattern = withRouter(
 
     const showTagsSection = Boolean(indexPattern.timeFieldName || (tags && tags.length > 0));
 
+    const renderDisplayNameEditor = () => {
+      if (isEditingDisplayName) {
+        return (
+          <EuiFlexGroup gutterSize="s" alignItems="center">
+            <EuiFlexItem grow={false} style={{ minWidth: 300 }}>
+              <EuiCompressedFormRow
+                label={i18n.translate(
+                  'indexPatternManagement.editIndexPattern.displayNameLabel',
+                  { defaultMessage: 'Display name' }
+                )}
+              >
+                <EuiCompressedFieldText
+                  value={displayNameDraft}
+                  onChange={(e) => setDisplayNameDraft(e.target.value)}
+                  placeholder={indexPattern.title}
+                  maxLength={256}
+                  data-test-subj="editIndexPatternDisplayNameInput"
+                />
+              </EuiCompressedFormRow>
+            </EuiFlexItem>
+            <EuiFlexItem grow={false}>
+              <EuiCompressedFormRow hasEmptyLabelSpace>
+                <EuiFlexGroup gutterSize="s">
+                  <EuiFlexItem grow={false}>
+                    <EuiSmallButton
+                      fill
+                      onClick={saveDisplayName}
+                      data-test-subj="saveDisplayNameButton"
+                    >
+                      {i18n.translate(
+                        'indexPatternManagement.editIndexPattern.saveDisplayName',
+                        { defaultMessage: 'Save' }
+                      )}
+                    </EuiSmallButton>
+                  </EuiFlexItem>
+                  <EuiFlexItem grow={false}>
+                    <EuiSmallButtonEmpty onClick={cancelDisplayNameEdit}>
+                      {i18n.translate(
+                        'indexPatternManagement.editIndexPattern.cancelDisplayName',
+                        { defaultMessage: 'Cancel' }
+                      )}
+                    </EuiSmallButtonEmpty>
+                  </EuiFlexItem>
+                </EuiFlexGroup>
+              </EuiCompressedFormRow>
+            </EuiFlexItem>
+          </EuiFlexGroup>
+        );
+      }
+
+      return (
+        <EuiFlexGroup gutterSize="s" alignItems="center">
+          <EuiFlexItem grow={false}>
+            <EuiText size="s" color="subdued">
+              {indexPattern.displayName
+                ? i18n.translate(
+                    'indexPatternManagement.editIndexPattern.displayNameValue',
+                    {
+                      defaultMessage: 'Display name: {displayName}',
+                      values: { displayName: indexPattern.displayName },
+                    }
+                  )
+                : i18n.translate(
+                    'indexPatternManagement.editIndexPattern.noDisplayName',
+                    { defaultMessage: 'No display name set' }
+                  )}
+            </EuiText>
+          </EuiFlexItem>
+          <EuiFlexItem grow={false}>
+            <EuiSmallButtonIcon
+              iconType="pencil"
+              aria-label={i18n.translate(
+                'indexPatternManagement.editIndexPattern.editDisplayNameAria',
+                { defaultMessage: 'Edit display name' }
+              )}
+              onClick={() => setIsEditingDisplayName(true)}
+              data-test-subj="editDisplayNameButton"
+            />
+          </EuiFlexItem>
+        </EuiFlexGroup>
+      );
+    };
+
     const useUpdatedUX = uiSettings.get('home:useNewHomePage');
 
     const renderDescription = () => {
@@ -287,6 +401,8 @@ export const EditIndexPattern = withRouter(
           deleteIndexPatternClick={removePattern}
           defaultIndex={defaultIndex}
         />
+        {renderDisplayNameEditor()}
+        <EuiSpacer size="s" />
         {showTagsSection && renderBadges()}
         {renderDescription()}
         {conflictedFields.length > 0 && (
@@ -315,6 +431,8 @@ export const EditIndexPattern = withRouter(
             deleteIndexPatternClick={removePattern}
             defaultIndex={defaultIndex}
           />
+          <EuiSpacer size="s" />
+          {renderDisplayNameEditor()}
           <EuiSpacer size="s" />
           {showTagsSection && renderBadges()}
           <EuiSpacer size="m" />

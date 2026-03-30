@@ -49,12 +49,14 @@ export async function getTitle(
 
   const dataSourceReference = getDataSourceReference(savedObject.references);
 
+  const patternLabel = savedObject.attributes.displayName || savedObject.attributes.title;
+
   if (dataSourceReference) {
     const dataSourceId = dataSourceReference.id;
     if (dataSourceIdToTitle.has(dataSourceId)) {
       return concatDataSourceWithIndexPattern(
         dataSourceIdToTitle.get(dataSourceId)!,
-        savedObject.attributes.title
+        patternLabel
       );
     }
   }
@@ -62,5 +64,5 @@ export async function getTitle(
   const getDataSource = async (id: string) =>
     await client.get<DataSourceAttributes>('data-source', id);
 
-  return getIndexPatternTitle(savedObject.attributes.title, savedObject.references, getDataSource);
+  return getIndexPatternTitle(patternLabel, savedObject.references, getDataSource);
 }

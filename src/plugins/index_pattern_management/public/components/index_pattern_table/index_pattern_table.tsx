@@ -195,6 +195,7 @@ export const IndexPatternTable = ({ canSave, history }: Props) => {
         name: string,
         index: {
           id: string;
+          displayName?: string;
           tags?: Array<{
             key: string;
             name: string;
@@ -207,8 +208,13 @@ export const IndexPatternTable = ({ canSave, history }: Props) => {
             {...reactRouterNavigate(history, `patterns/${index.id}`)}
             {...(useUpdatedUX ? { textProps: { style: { fontWeight: 600 } } } : {})}
           >
-            {name}
+            {index.displayName || name}
           </EuiButtonEmpty>
+          {index.displayName && (
+            <EuiText size="xs" color="subdued">
+              {name}
+            </EuiText>
+          )}
           &emsp;
           <EuiBadgeGroup gutterSize="s">
             {index.tags &&

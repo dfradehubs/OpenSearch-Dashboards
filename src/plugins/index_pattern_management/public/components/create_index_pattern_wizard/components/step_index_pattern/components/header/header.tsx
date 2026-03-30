@@ -66,6 +66,8 @@ interface HeaderProps {
   isIncludingSystemIndices: boolean;
   stepInfo: StepInfo;
   dataSourceRef?: DataSourceRef;
+  displayName?: string;
+  onDisplayNameChanged?: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -81,6 +83,8 @@ export const Header: React.FC<HeaderProps> = ({
   isIncludingSystemIndices,
   stepInfo,
   dataSourceRef,
+  displayName,
+  onDisplayNameChanged,
   ...rest
 }) => {
   const { dataSourceEnabled } = useOpenSearchDashboards<IndexPatternManagmentContext>().services;
@@ -119,6 +123,38 @@ export const Header: React.FC<HeaderProps> = ({
                   query,
                   onQueryChanged
                 )}
+            {onDisplayNameChanged && (
+              <EuiCompressedFormRow
+                fullWidth
+                label={
+                  <FormattedMessage
+                    id="indexPatternManagement.createIndexPattern.step.displayNameLabel"
+                    defaultMessage="Display name (optional)"
+                  />
+                }
+                helpText={
+                  <FormattedMessage
+                    id="indexPatternManagement.createIndexPattern.step.displayNameHelpText"
+                    defaultMessage="A friendly name to display instead of the index pattern."
+                  />
+                }
+              >
+                <EuiCompressedFieldText
+                  name="displayName"
+                  placeholder={i18n.translate(
+                    'indexPatternManagement.createIndexPattern.step.displayNamePlaceholder',
+                    {
+                      defaultMessage: 'e.g. Production Logs',
+                    }
+                  )}
+                  value={displayName || ''}
+                  onChange={onDisplayNameChanged}
+                  maxLength={256}
+                  data-test-subj="createIndexPatternDisplayNameInput"
+                  fullWidth
+                />
+              </EuiCompressedFormRow>
+            )}
             {showSystemIndices ? (
               <EuiCompressedFormRow>
                 <EuiCompressedSwitch

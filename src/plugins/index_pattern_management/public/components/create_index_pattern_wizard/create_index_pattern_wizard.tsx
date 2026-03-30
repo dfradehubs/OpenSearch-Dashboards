@@ -71,6 +71,7 @@ import { TopNavControlDescriptionData } from '../../../../navigation/public';
 interface CreateIndexPatternWizardState {
   step: StepType;
   indexPattern: string;
+  displayName?: string;
   allIndices: MatchedItem[];
   remoteClustersExist: boolean;
   isInitiallyLoadingIndices: boolean;
@@ -223,6 +224,7 @@ export class CreateIndexPatternWizard extends Component<
       emptyPattern = await this.context.services.data.indexPatterns.createAndSave({
         id: indexPatternId,
         title: indexPattern,
+        displayName: this.state.displayName,
         timeFieldName,
         dataSourceRef,
         ...this.state.indexPatternCreationType.getIndexPatternMappings(),
@@ -262,8 +264,8 @@ export class CreateIndexPatternWizard extends Component<
     history.push(`/patterns/${emptyPattern.id}`);
   };
 
-  goToNextFromIndexPattern = (indexPattern: string, selectedTimeField?: string) => {
-    this.setState({ indexPattern, selectedTimeField });
+  goToNextFromIndexPattern = (indexPattern: string, selectedTimeField?: string, displayName?: string) => {
+    this.setState({ indexPattern, selectedTimeField, displayName });
     this.goToNextStep();
   };
 
