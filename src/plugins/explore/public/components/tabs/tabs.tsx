@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { i18n } from '@osd/i18n';
 import './tabs.scss';
 import { useCallback, useMemo } from 'react';
 import { EuiFlexGroup, EuiFlexItem, EuiTab, EuiTabs } from '@elastic/eui';
@@ -31,6 +32,11 @@ import { DiscoverNoResults } from '../../application/legacy/discover/application
 import { QueryExecutionStatus } from '../../application/utils/state_management/types';
 import { useDatasetContext } from '../../application/context';
 import { useMetricsPageMode } from '../../application/pages/metrics/metrics_page_mode_context';
+import {
+  TransformationService,
+  registerAllTransformations,
+  UrlTransformationState,
+} from '../../components/data_transformations';
 
 export const EXPLORE_ACTION_BAR_SLOT_ID = 'explore-action-bar-slot';
 
@@ -57,6 +63,8 @@ export const ExploreTabs = () => {
       const activeTab = services.tabRegistry.getTab(tabId);
       const prepareQuery = activeTab?.prepareQuery || defaultPrepareQueryString;
       const newTabCacheKey = prepareQuery(query);
+      // An empty key means the tab cannot build a query yet.
+      if (!newTabCacheKey) return;
 
       const needsExecution = !results[newTabCacheKey];
 
@@ -89,6 +97,18 @@ export const ExploreTabs = () => {
       if (isMetricsExploreTab && metricsPageMode === 'query') {
         return false;
       }
+
+      // A tab renders only for the languages it declares. Tabs declaring none
+      // are language-agnostic, matching the language toggle's own
+      // `supportedLanguages?.length` guard.
+      const supportsActiveLanguage =
+        !query?.language ||
+        !registryTab.supportedLanguages?.length ||
+        registryTab.supportedLanguages.includes(query.language);
+      if (!supportsActiveLanguage) {
+        return false;
+      }
+
       if (isPatternsTab || isFieldStatsTab) {
         return registeredFlavor && isDefaultDataset;
       }

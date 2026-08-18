@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useRef, useMemo } from 'react';
+import React, { useRef, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { EuiButtonIcon, EuiTextColor, EuiTextArea } from '@elastic/eui';
 import { i18n } from '@osd/i18n';
 import { useObservable } from 'react-use';
@@ -15,7 +15,6 @@ import { SlashCommandMenu } from './slash_command_menu';
 import { ChatContextPopover } from './chat_context_popover';
 import { useOpenSearchDashboards } from '../../../opensearch_dashboards_react/public';
 import { CoreStart } from '../../../../core/public';
-import { ConfirmationRequest } from '../services/confirmation_service';
 
 import './chat_input.scss';
 
@@ -24,31 +23,41 @@ interface ChatInputProps {
   input: string;
   isCapturing: boolean;
   isStreaming: boolean;
-  isSendingToolResult?: boolean;
-  pendingConfirmation?: ConfirmationRequest | null;
+  disabled?: boolean;
+  placeholder?: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
   onStop: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   includeScreenShotEnabled: boolean;
   onCaptureScreenshot: () => void;
+  // Whether the input should auto-focus on mount. Callers should only pass
+  // true when the window was opened by an explicit user/agent action (not
+  // on bootstrap auto-open, to avoid stealing focus from the page on load).
+  ownFocus?: boolean;
 }
 
-export const ChatInput: React.FC<ChatInputProps> = ({
-  layoutMode,
-  input,
-  isCapturing,
-  isStreaming,
-  isSendingToolResult = false,
-  pendingConfirmation,
-  onInputChange,
-  onSend,
-  onStop,
-  onKeyDown,
-  includeScreenShotEnabled,
-  onCaptureScreenshot,
-}) => {
+export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(function (
+  {
+    layoutMode,
+    input,
+    isCapturing,
+    isStreaming,
+    disabled = false,
+    placeholder,
+    onInputChange,
+    onSend,
+    onStop,
+    onKeyDown,
+    includeScreenShotEnabled,
+    onCaptureScreenshot,
+    ownFocus = false,
+  },
+  ref
+) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useImperativeHandle(ref, () => inputRef.current!);
 
   const {
     services: {
@@ -109,22 +118,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           <EuiTextArea
             inputRef={inputRef}
             placeholder={
-              pendingConfirmation
-                ? i18n.translate('chat.input.waitingForConfirmation', {
-                    defaultMessage: 'Waiting for confirmation...',
-                  })
-                : i18n.translate('chat.input.placeholder', {
-                    defaultMessage: 'How can I help you today?',
-                  })
+              placeholder ||
+              i18n.translate('chat.input.placeholder', {
+                defaultMessage: 'How can I help you today?',
+              })
             }
             value={input}
             onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            autoFocus={true}
+            // Only auto-focus when the window was opened by an explicit user/
+            // agent action. Bootstrap auto-open (restoring persisted window
+            // state) passes ownFocus=false, so we don't steal focus on page
+            // load. Caller (ChatWindow) computes this from the chat
+            // plugin's ChatService — see ChatService#getShouldAutoFocusInput.
+            autoFocus={ownFocus}
             fullWidth
             resize="none"
             rows={2}
-            disabled={isSendingToolResult || !!pendingConfirmation}
+            disabled={disabled}
           />
           {ghostText && (
             <div className="chatInput__ghostText" aria-hidden="true">
@@ -145,9 +156,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         <EuiButtonIcon
           iconType={isStreaming ? 'stop' : 'sortUp'}
           onClick={isStreaming ? onStop : onSend}
-          isDisabled={
-            (!isStreaming && input.trim().length === 0) || isCapturing || isSendingToolResult
-          }
+          isDisabled={(!isStreaming && input.trim().length === 0) || isCapturing || disabled}
           aria-label={isStreaming ? 'Stop generating' : 'Send message'}
           size="m"
           color={isStreaming ? 'danger' : 'primary'}
@@ -157,4 +166,4 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       </div>
     </div>
   );
-};
+});

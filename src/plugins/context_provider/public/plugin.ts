@@ -20,14 +20,12 @@ import { AssistantActionService } from './services/assistant_action_service';
  * @experimental
  * Context Provider plugin for React hooks-based context capture system. This plugin is experimental and will change in future releases.
  */
-export class ContextProviderPlugin
-  implements
-    Plugin<
-      ContextProviderSetup,
-      ContextProviderStart,
-      ContextProviderSetupDeps,
-      ContextProviderStartDeps
-    > {
+export class ContextProviderPlugin implements Plugin<
+  ContextProviderSetup,
+  ContextProviderStart,
+  ContextProviderSetupDeps,
+  ContextProviderStartDeps
+> {
   private contextCaptureService?: ContextCaptureService;
 
   constructor(private readonly initializerContext: PluginInitializerContext) {}
@@ -54,6 +52,8 @@ export class ContextProviderPlugin
         actions: {
           registerAssistantAction: () => undefined,
           unregisterAssistantAction: () => undefined,
+          suppressDefaultPageContext: () => undefined,
+          unsuppressDefaultPageContext: () => undefined,
         },
         hooks: {
           usePageContext: () => '',
@@ -70,6 +70,9 @@ export class ContextProviderPlugin
       actions: {
         registerAssistantAction: AssistantActionService.getInstance().registerAction,
         unregisterAssistantAction: AssistantActionService.getInstance().unregisterAction,
+        suppressDefaultPageContext: () => this.contextCaptureService!.suppressDefaultPageContext(),
+        unsuppressDefaultPageContext: () =>
+          this.contextCaptureService!.unsuppressDefaultPageContext(),
       },
       hooks: {
         usePageContext,

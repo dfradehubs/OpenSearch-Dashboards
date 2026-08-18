@@ -12,6 +12,7 @@ import {
   Query,
   DataView,
   IndexPatternField,
+  getDataSourceEngineCapabilities,
 } from '../../../../../../../../src/plugins/data/common';
 import { QueryExecutionStatus } from '../types';
 import { setResults, ISearchResult, IPrometheusSearchResult } from '../slices';
@@ -78,6 +79,7 @@ export const defaultPrepareQueryString = (query: Query): string => {
   switch (query.language) {
     case 'PPL':
       return defaultPreparePplQuery(query).query;
+    case 'SQL':
     case 'PROMQL':
       return query.query as string;
     default:
@@ -180,7 +182,7 @@ const updateFieldTopQueryValues = (hits: any[], dataset: DataView): void => {
         const topValues = result.buckets.map((bucket) => String(bucket.value));
         fieldUpdates.push({ field, topValues });
       }
-    } catch (error) {
+    } catch {
       // Silently continue on field processing errors
     }
   });
@@ -276,6 +278,7 @@ export const executeQueries = createAsyncThunk<
     dataTableQueryStatus?.status === QueryExecutionStatus.UNINITIALIZED;
   const needsHistogramQuery =
     query.language !== 'PROMQL' &&
+    query.language !== 'SQL' && // Disable histograms for SQL
     (!results[histogramCacheKey] ||
       histogramQueryStatus?.status === QueryExecutionStatus.UNINITIALIZED);
   const promises = [];
@@ -401,10 +404,14 @@ export const executeQueries = createAsyncThunk<
     activeTabCacheKey = activeTabPrepareQuery(query);
   }
 
-  // Check what needs execution
+  // Check what needs execution. An empty key means that tab's `prepareQuery`
+  // cannot build a query yet, so there is nothing to run.
   const needsVisualizationTabQuery =
-    visualizationTabCacheKey !== defaultCacheKey && !results[visualizationTabCacheKey];
+    !!visualizationTabCacheKey &&
+    visualizationTabCacheKey !== defaultCacheKey &&
+    !results[visualizationTabCacheKey];
   const needsActiveTabQuery =
+    !!activeTabCacheKey &&
     activeTabCacheKey !== visualizationTabCacheKey &&
     activeTabCacheKey !== defaultCacheKey &&
     !results[activeTabCacheKey];
@@ -529,7 +536,7 @@ const executeQueryBase = async (
       throw new Error('Dataset not found for query execution');
     }
 
-    const dataset = services.data.dataViews.convertToDataset(dataView);
+    const dataset = await services.data.dataViews.convertToDataset(dataView);
 
     // Create histogram config once for use in both query building and result processing
     let histogramConfig: HistogramConfig | null = null;
@@ -537,8 +544,15 @@ const executeQueryBase = async (
       histogramConfig = createHistogramConfigWithInterval(dataView, interval, services, getState);
     }
 
+    // Some engines (e.g. legacy Elasticsearch / Open Distro) have no `span()`/`timechart`
+    // time-bucketing in the PPL `stats` by-clause, so the histogram query fails to parse. Skip
+    // building it for those engines and run the plain query instead (the histogram chart just won't
+    // populate).
+    const datasetEngineType = dataset?.dataSource?.engineType ?? dataset?.dataSource?.type;
+    const supportsPplSpan = getDataSourceEngineCapabilities(datasetEngineType).supportsPplSpan;
+
     let effectiveQuery = queryString;
-    if (query.language === 'PPL' && histogramConfig && isHistogramQuery) {
+    if (query.language === 'PPL' && histogramConfig && isHistogramQuery && supportsPplSpan) {
       effectiveQuery = buildPPLHistogramQuery(queryString, histogramConfig);
     }
 
@@ -602,6 +616,7 @@ const executeQueryBase = async (
       ...rawResults,
       elapsedMs: inspectorRequest.getTime()!,
       fieldSchema: searchSource.getDataFrame()?.schema,
+      profile: searchSource.getDataFrame()?.meta?.profile,
     };
 
     if (isHistogramQuery && histogramConfig) {
@@ -729,6 +744,13 @@ export const createSearchSourceWithQuery = async (
   const queryStringWithExecutedQuery = {
     ...data.query.queryString.getQuery(),
     query: preparedQuery.query,
+    // When query profiling is enabled, ask the engine to profile this query so the response
+    // reports whether it ran on the complex worker pool (see results.profile.isComplex). PPL-only:
+    // only PPL runs on that pool, and this factory is shared, so sending the field on other
+    // languages (e.g. SQL) is meaningless and can affect engine selection on some backends.
+    ...(services.queryProfilingEnabled && preparedQuery.language === 'PPL'
+      ? { profile: true }
+      : {}),
   };
 
   searchSource.setFields({
@@ -793,6 +815,18 @@ export const executeTabQuery = createAsyncThunk<
 >('query/executeTabQuery', async (params, thunkAPI) => {
   const { services } = params;
   const { getState } = thunkAPI;
+
+  // A tab whose `prepareQuery` cannot yet build a query returns an empty string
+  // (see the patterns tab in `register_tabs`). Executing that would send an empty
+  // query to the backend and cache the response under an empty key, so skip it and
+  // leave the tab uninitialized until the tab can produce a real query.
+  //
+  // Gated on cacheKey alone: most callers pass the same value for both, but the
+  // BRAIN retry in `register_tabs` deliberately passes a queryString that differs
+  // from its cacheKey, and that path should keep running.
+  if (!params.cacheKey) {
+    return;
+  }
 
   /**
    * below activeTabCustomQueryErrorHandler logic to be removed when datasets

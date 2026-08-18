@@ -89,11 +89,11 @@ describe('IndexPatterns', () => {
     uiSettingsGet.mockReturnValue(Promise.resolve(false));
 
     indexPatterns = new IndexPatternsService({
-      uiSettings: ({
+      uiSettings: {
         get: uiSettingsGet,
         getAll: () => {},
-      } as any) as UiSettingsCommon,
-      savedObjectsClient: (savedObjectsClient as unknown) as SavedObjectsClientCommon,
+      } as any as UiSettingsCommon,
+      savedObjectsClient: savedObjectsClient as unknown as SavedObjectsClientCommon,
       apiClient: createFieldsFetcher(),
       fieldFormats,
       onNotification: () => {},
@@ -191,10 +191,10 @@ describe('IndexPatterns', () => {
     const indexPattern = await indexPatterns.create({ title }, true);
     expect(indexPattern).toBeInstanceOf(IndexPattern);
     expect(indexPattern.title).toBe(title);
-    expect(indexPatterns.refreshFields).not.toBeCalled();
+    expect(indexPatterns.refreshFields).not.toHaveBeenCalled();
 
     await indexPatterns.create({ title });
-    expect(indexPatterns.refreshFields).toBeCalled();
+    expect(indexPatterns.refreshFields).toHaveBeenCalled();
   });
 
   test('createAndSave', async () => {
@@ -202,8 +202,8 @@ describe('IndexPatterns', () => {
     indexPatterns.createSavedObject = jest.fn();
     indexPatterns.setDefault = jest.fn();
     await indexPatterns.createAndSave({ title });
-    expect(indexPatterns.createSavedObject).toBeCalled();
-    expect(indexPatterns.setDefault).toBeCalled();
+    expect(indexPatterns.createSavedObject).toHaveBeenCalled();
+    expect(indexPatterns.setDefault).toHaveBeenCalled();
   });
 
   test('savedObjectToSpec', () => {
@@ -261,5 +261,364 @@ describe('IndexPatterns', () => {
       Promise.resolve(key === UI_SETTINGS.DATA_WITH_LONG_NUMERALS ? true : undefined)
     );
     expect(await indexPatterns.isLongNumeralsSupported()).toBe(true);
+  });
+
+  describe('auto-refresh of fields', () => {
+    const flushPromises = () => new Promise((resolve) => setImmediate(resolve));
+
+    const buildField = (name: string) => ({
+      name,
+      type: 'string',
+      searchable: true,
+      aggregatable: true,
+    });
+
+    const enableAutoRefresh = (interval: number = 300000, notify: boolean = true) => {
+      uiSettingsGet.mockImplementation((key: string) => {
+        if (key === UI_SETTINGS.INDEXPATTERN_AUTO_REFRESH_FIELDS) return Promise.resolve(true);
+        if (key === UI_SETTINGS.INDEXPATTERN_AUTO_REFRESH_FIELDS_INTERVAL_MS) {
+          return Promise.resolve(interval);
+        }
+        if (key === UI_SETTINGS.INDEXPATTERN_NOTIFY_ON_NEW_FIELDS) return Promise.resolve(notify);
+        return Promise.resolve(undefined);
+      });
+    };
+
+    const mockApi = (
+      fields: Array<{ name: string; type: string; searchable: boolean; aggregatable: boolean }>
+    ) => {
+      const fetcher = jest.fn().mockResolvedValue(fields);
+      (indexPatterns as any).apiClient.getFieldsForWildcard = fetcher;
+      return fetcher;
+    };
+
+    beforeEach(() => {
+      indexPatterns.clearCache();
+      setDocsourcePayload('auto-id', {
+        id: 'auto-id',
+        version: 'v1',
+        attributes: {
+          title: 'auto-pattern-*',
+          fields: JSON.stringify([buildField('existing')]),
+        },
+      });
+    });
+
+    test('does not refresh when the setting is disabled', async () => {
+      uiSettingsGet.mockResolvedValue(false);
+      const fetcher = mockApi([buildField('existing'), buildField('brand-new')]);
+
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    test('refreshes fields in the background on first access', async () => {
+      enableAutoRefresh();
+      const fetcher = mockApi([buildField('existing')]);
+
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    test('respects the TTL between consecutive get() calls', async () => {
+      enableAutoRefresh(300000);
+      const fetcher = mockApi([buildField('existing')]);
+
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    test('refreshes again once the TTL has elapsed', async () => {
+      enableAutoRefresh(1000);
+      const fetcher = mockApi([buildField('existing')]);
+      const realNow = Date.now.bind(Date);
+      const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => 1000);
+
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      nowSpy.mockImplementation(() => 3000);
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      nowSpy.mockRestore();
+      // Sanity check no test left a frozen clock around.
+      expect(typeof realNow()).toBe('number');
+    });
+
+    test('does not persist when the field list has not changed', async () => {
+      enableAutoRefresh();
+      mockApi([buildField('existing')]);
+
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      expect(savedObjectsClient.update).not.toHaveBeenCalled();
+    });
+
+    test('persists and notifies once when a new field is discovered', async () => {
+      enableAutoRefresh();
+      mockApi([buildField('existing'), buildField('brand-new')]);
+      const notify = jest.fn();
+      (indexPatterns as any).onNotification = notify;
+
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      expect(savedObjectsClient.update).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify.mock.calls[0][0].color).toBe('primary');
+    });
+
+    test('does not re-notify for the same pattern within a session', async () => {
+      enableAutoRefresh(1);
+      const fetcher = mockApi([buildField('existing'), buildField('brand-new')]);
+      const notify = jest.fn();
+      (indexPatterns as any).onNotification = notify;
+      const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => 1000);
+
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      nowSpy.mockImplementation(() => 5000);
+      fetcher.mockResolvedValue([
+        buildField('existing'),
+        buildField('brand-new'),
+        buildField('another-one'),
+      ]);
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      expect(notify).toHaveBeenCalledTimes(1);
+      nowSpy.mockRestore();
+    });
+
+    test('get() does not block on the background refresh', async () => {
+      enableAutoRefresh();
+      const neverResolves = new Promise(() => {});
+      (indexPatterns as any).apiClient.getFieldsForWildcard = jest
+        .fn()
+        .mockReturnValue(neverResolves);
+
+      const result = await indexPatterns.get('auto-id');
+      expect(result).toBeDefined();
+      expect(result.id).toBe('auto-id');
+    });
+
+    test('claims the in-flight slot synchronously to coalesce concurrent invocations', () => {
+      enableAutoRefresh();
+      // A fetcher that never resolves keeps the work promise pending.
+      (indexPatterns as any).apiClient.getFieldsForWildcard = jest
+        .fn()
+        .mockReturnValue(new Promise(() => {}));
+
+      // A minimal stand-in pattern; we only invoke the private dedup entry point so it
+      // doesn't need a full IndexPattern instance.
+      const fakePattern: any = {
+        id: 'race-id',
+        title: 'race-pattern-*',
+        version: 'v1',
+        fields: { getAll: () => [], replaceAll: jest.fn() },
+        getScriptedFields: () => [],
+      };
+
+      const p1 = (indexPatterns as any).maybeRefreshFieldsInBackground(fakePattern);
+      const p2 = (indexPatterns as any).maybeRefreshFieldsInBackground(fakePattern);
+
+      // Same promise => slot was claimed synchronously between p1 and p2.
+      expect(p1).toBe(p2);
+    });
+
+    test('coalesces persistence: skips the write when another client already wrote a superset', async () => {
+      enableAutoRefresh();
+      // Simulate another client persisting a superset between our fetch and our write.
+      (indexPatterns as any).apiClient.getFieldsForWildcard = jest
+        .fn()
+        .mockImplementation(async () => {
+          object.version = 'v2';
+          object.attributes.fields = JSON.stringify([
+            buildField('existing'),
+            buildField('brand-new'),
+          ]);
+          return [buildField('existing'), buildField('brand-new')];
+        });
+
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      expect(savedObjectsClient.update).not.toHaveBeenCalled();
+      // The coalescer must have observed the newer saved object via an explicit get.
+      // Two calls expected: one from the initial indexPatterns.get(id), one from the
+      // coalescer's freshness check.
+      expect((savedObjectsClient.get as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    test('coalesces persistence: still writes when the remote superset changes a field type', async () => {
+      enableAutoRefresh();
+      // The peer client persisted the SAME field names but with a different type for
+      // `existing`. Our local fetcher still sees the canonical `string` type, so the
+      // coalescer must NOT skip the write — the saved object would otherwise drift
+      // from the real cluster schema.
+      (indexPatterns as any).apiClient.getFieldsForWildcard = jest
+        .fn()
+        .mockImplementation(async () => {
+          object.version = 'v2';
+          object.attributes.fields = JSON.stringify([
+            { ...buildField('existing'), type: 'text' },
+            buildField('brand-new'),
+          ]);
+          return [buildField('existing'), buildField('brand-new')];
+        });
+
+      await indexPatterns.get('auto-id');
+      await flushPromises();
+
+      expect(savedObjectsClient.update).toHaveBeenCalled();
+    });
+
+    test('swallows fetcher errors without raising onError or onNotification', async () => {
+      enableAutoRefresh();
+      (indexPatterns as any).apiClient.getFieldsForWildcard = jest
+        .fn()
+        .mockRejectedValue(new Error('cluster unreachable'));
+      const notify = jest.fn();
+      const onError = jest.fn();
+      (indexPatterns as any).onNotification = notify;
+      (indexPatterns as any).onError = onError;
+
+      await expect(indexPatterns.get('auto-id')).resolves.toBeDefined();
+      await flushPromises();
+
+      expect(notify).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+      expect(savedObjectsClient.update).not.toHaveBeenCalled();
+    });
+  });
+  describe('getCache - excludeEngineTypes', () => {
+    const buildPattern = (id: string, dataSourceId?: string) => ({
+      id,
+      type: 'index-pattern',
+      version: '1',
+      attributes: { title: id },
+      references: dataSourceId ? [{ id: dataSourceId, type: 'data-source', name: 'ds' }] : [],
+    });
+
+    const setupClientWithDataSources = (
+      patterns: Array<ReturnType<typeof buildPattern>>,
+      dataSourceEngineTypes: Record<string, string | undefined>
+    ) => {
+      savedObjectsClient.find = jest.fn(
+        () => Promise.resolve(patterns) as Promise<Array<SavedObject<any>>>
+      );
+      const buildDsObject = (id: string) => {
+        const engineType = dataSourceEngineTypes[id];
+        return {
+          id,
+          type: 'data-source',
+          version: '1',
+          attributes: { title: id, ...(engineType && { dataSourceEngineType: engineType }) },
+          references: [],
+        } as SavedObject<any>;
+      };
+      // getDataSource (called from refreshSavedObjectsCache to resolve titles) uses get()
+      savedObjectsClient.get = jest.fn(async (_type, id) => buildDsObject(id as string));
+      // applyEngineTypeFilter uses bulkGet()
+      // @ts-expect-error TS2339 bulkGet is on SavedObjectsClientCommon but not strongly typed in this mock
+      savedObjectsClient.bulkGet = jest.fn(async (objs) => ({
+        savedObjects: (objs as Array<{ id: string; type: string }>).map((o) => buildDsObject(o.id)),
+      }));
+    };
+
+    test('returns full cache when options omitted', async () => {
+      setupClientWithDataSources([buildPattern('a', 'ds-os'), buildPattern('b', 'ds-ae')], {
+        'ds-os': 'OpenSearch',
+        'ds-ae': 'AnalyticEngine',
+      });
+      const cache = await indexPatterns.getCache();
+      expect(cache?.map((o) => o.id)).toEqual(['a', 'b']);
+    });
+
+    test('returns full cache when excludeEngineTypes is empty', async () => {
+      setupClientWithDataSources([buildPattern('a', 'ds-os'), buildPattern('b', 'ds-ae')], {
+        'ds-os': 'OpenSearch',
+        'ds-ae': 'AnalyticEngine',
+      });
+      const cache = await indexPatterns.getCache({ excludeEngineTypes: [] });
+      expect(cache?.map((o) => o.id)).toEqual(['a', 'b']);
+    });
+
+    test('excludes patterns whose data source has a blocked engine type', async () => {
+      setupClientWithDataSources([buildPattern('a', 'ds-os'), buildPattern('b', 'ds-ae')], {
+        'ds-os': 'OpenSearch',
+        'ds-ae': 'AnalyticEngine',
+      });
+      const cache = await indexPatterns.getCache({ excludeEngineTypes: ['AnalyticEngine'] });
+      expect(cache?.map((o) => o.id)).toEqual(['a']);
+    });
+
+    test('keeps patterns with no data-source reference', async () => {
+      setupClientWithDataSources([buildPattern('local'), buildPattern('a', 'ds-ae')], {
+        'ds-ae': 'AnalyticEngine',
+      });
+      const cache = await indexPatterns.getCache({ excludeEngineTypes: ['AnalyticEngine'] });
+      expect(cache?.map((o) => o.id)).toEqual(['local']);
+    });
+
+    test('keeps patterns when bulkGet returns an error per object', async () => {
+      const patterns = [buildPattern('a', 'ds-missing')];
+      savedObjectsClient.find = jest.fn(
+        () => Promise.resolve(patterns) as Promise<Array<SavedObject<any>>>
+      );
+      // getDataSource (title resolution) needs to succeed
+      savedObjectsClient.get = jest.fn(async (_type, id) => ({
+        id,
+        type: 'data-source',
+        version: '1',
+        attributes: { title: id as string },
+        references: [],
+      })) as any;
+      // bulkGet reports the SO as having an error — applyEngineTypeFilter should skip it
+      // @ts-expect-error TS2339 bulkGet typing
+      savedObjectsClient.bulkGet = jest.fn(async (objs) => ({
+        savedObjects: (objs as Array<{ id: string; type: string }>).map((o) => ({
+          id: o.id,
+          type: o.type,
+          attributes: {},
+          references: [],
+          error: { error: 'Not Found', message: 'not found', statusCode: 404 },
+        })),
+      }));
+      const cache = await indexPatterns.getCache({ excludeEngineTypes: ['AnalyticEngine'] });
+      expect(cache?.map((o) => o.id)).toEqual(['a']);
+    });
+
+    test('keeps all patterns when bulkGet itself throws', async () => {
+      const patterns = [buildPattern('a', 'ds-ae')];
+      savedObjectsClient.find = jest.fn(
+        () => Promise.resolve(patterns) as Promise<Array<SavedObject<any>>>
+      );
+      savedObjectsClient.get = jest.fn(async (_type, id) => ({
+        id,
+        type: 'data-source',
+        version: '1',
+        attributes: { title: id as string },
+        references: [],
+      })) as any;
+      // @ts-expect-error TS2339 bulkGet typing
+      savedObjectsClient.bulkGet = jest.fn(async () => {
+        throw new Error('network error');
+      });
+      const cache = await indexPatterns.getCache({ excludeEngineTypes: ['AnalyticEngine'] });
+      expect(cache?.map((o) => o.id)).toEqual(['a']);
+    });
   });
 });

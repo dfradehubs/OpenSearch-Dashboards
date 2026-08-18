@@ -10,6 +10,7 @@ import type { Event } from './events';
 export interface TextInputContent {
   type: 'text';
   text: string;
+  name?: string;
 }
 
 interface BinaryInputContent {
@@ -19,9 +20,29 @@ interface BinaryInputContent {
   url?: string;
   data?: string;
   filename?: string;
+  name?: string;
 }
 
-type InputContent = TextInputContent | BinaryInputContent;
+interface InputContentDataSource {
+  type: 'data';
+  value: string;
+  mimeType: string;
+}
+
+interface InputContentUrlSource {
+  type: 'url';
+  value: string;
+  mimeType?: string;
+}
+
+type InputContentSource = InputContentDataSource | InputContentUrlSource;
+
+interface ImageInputContent {
+  type: 'image';
+  source: InputContentSource;
+  metadata?: Record<string, unknown>;
+}
+export type InputContent = TextInputContent | BinaryInputContent | ImageInputContent;
 
 /**
  * Function call interface
@@ -64,6 +85,21 @@ export interface DeveloperMessage extends BaseMessage {
 export interface SystemMessage extends BaseMessage {
   role: 'system';
   content: string;
+  /**
+   * When set, this system message corresponds to a failed tool result
+   * submission for the given tool call. The UI may use this (together with
+   * `canResend`) to offer a resend affordance.
+   */
+  toolCallId?: string;
+  /**
+   * Whether the associated tool result submission can be retried by the user.
+   */
+  canResend?: boolean;
+  /**
+   * The tool result payload to resend. Stored directly on the timeline message
+   * so no external map is needed.
+   */
+  toolResult?: any;
 }
 
 /**
@@ -92,18 +128,13 @@ export interface ToolMessage {
   content: string;
   role: 'tool';
   toolCallId: string;
-  error?: string;
 }
 
 /**
  * Discriminated union of all message types
  */
 export type Message =
-  | DeveloperMessage
-  | SystemMessage
-  | AssistantMessage
-  | UserMessage
-  | ToolMessage;
+  DeveloperMessage | SystemMessage | AssistantMessage | UserMessage | ToolMessage;
 
 /**
  * Valid message role types
@@ -157,7 +188,7 @@ export interface ChatServiceInterface {
     messages: Message[]
   ): Promise<{ observable: any; userMessage: UserMessage }>;
   sendMessageWithWindow(
-    content: string,
+    content: string | InputContent[],
     messages: Message[],
     options?: { clearConversation?: boolean }
   ): Promise<{ observable: any; userMessage: UserMessage }>;
@@ -170,11 +201,12 @@ export interface ChatImplementationFunctions {
   // Message operations
   sendMessage: (
     content: string,
-    messages: Message[]
+    messages: Message[],
+    userMessage?: UserMessage
   ) => Promise<{ observable: any; userMessage: UserMessage }>;
 
   sendMessageWithWindow: (
-    content: string,
+    content: string | InputContent[],
     messages: Message[],
     options?: { clearConversation?: boolean }
   ) => Promise<{ observable: any; userMessage: UserMessage }>;

@@ -9,6 +9,9 @@ import type {
   ToolMessage,
   TextInputContent,
 } from '../../../common/types';
+import { TOOL_EXECUTION_ERROR_PREFIX } from '../../../common';
+import { stripInlineSuggestions } from '../../../common/parse_inline_suggestions';
+import { resolveImageContent } from '../../utils/user_message_input';
 import { ChatExportData, ChatExportOptions, ChatTraceStep, QuestionImage } from './types';
 import { generatePDFReport } from './pdf_template';
 import { generateMarkdownReport } from './markdown_template';
@@ -35,7 +38,7 @@ export async function collectChatExportData(
   return {
     question,
     questionImage,
-    answer: targetMessage.content || '',
+    answer: stripInlineSuggestions(targetMessage.content || ''),
     traces: options.includeTraces ? extractTraces(timeline, targetIndex) : [],
     metadata: options.includeMetadata
       ? { timestamp: new Date().toISOString(), threadId }
@@ -105,11 +108,11 @@ export function findPrecedingQuestion(
           .filter((c): c is TextInputContent => c.type === 'text')
           .map((c) => c.text)
           .join(' ');
-        const binaryContent = msg.content.find((c) => c.type === 'binary' && 'data' in c);
-        const image =
-          binaryContent && binaryContent.type === 'binary' && binaryContent.data
-            ? { base64: binaryContent.data, mimeType: binaryContent.mimeType || 'image/png' }
-            : undefined;
+
+        const imageContent = msg.content.map(resolveImageContent).find((c) => c?.base64);
+        const image = imageContent?.base64
+          ? { base64: imageContent.base64, mimeType: imageContent.mimeType }
+          : undefined;
         return { text, image };
       }
       return { text: '' };
@@ -156,11 +159,21 @@ export function extractTraces(timeline: Message[], targetIndex: number): ChatTra
         (m) => m.role === 'tool' && (m as ToolMessage).toolCallId === toolCall.id
       ) as ToolMessage | undefined;
 
+      // Local tool execution errors are now encoded as a prefix on the
+      // ToolMessage content (see chat_event_handler.handleToolCallEnd).
+      // Strip the prefix for the export so the trace shows the raw error
+      // message in the dedicated `error` slot, and omit the redundant
+      // `result` in that case.
+      const hasExecutionError = toolResult?.content?.startsWith(TOOL_EXECUTION_ERROR_PREFIX);
+      const error = hasExecutionError
+        ? toolResult!.content.slice(TOOL_EXECUTION_ERROR_PREFIX.length)
+        : undefined;
+
       traces.push({
         toolName: toolCall.function.name,
         arguments: toolCall.function.arguments,
-        result: toolResult?.content,
-        error: toolResult?.error,
+        result: hasExecutionError ? undefined : toolResult?.content,
+        error,
       });
     }
   }
